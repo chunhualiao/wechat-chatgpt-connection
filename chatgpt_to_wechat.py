@@ -4,9 +4,10 @@
 # Algorithm
 #   step 1 get the wechat chat window by its title
 #   step 2 taking screenshots
-#   step 3 extracting text
-#   step 4 sending text to OpenAI's API
+#   step 3 extracting text using an OCR package
+#   step 4 sending text to OpenAI's API to obtain an answer
 #   step 5 sending the response back to the chat window
+
 import openai
 import time
 import cv2
@@ -18,52 +19,53 @@ from PIL import Image
 import clipboard
 from colorthief import ColorThief
 import json
-
 import pygetwindow as gw
 import sys
 #import numpy as np
 #import tempfile
 #import pytesseract # OCR quality is bad for Chinese.
-#import easyocr  # OCR quality is bad for mixed Enlighs and Chinese, also slow on CPU only machine
+#import easyocr  # OCR quality is bad for mixed Enlighs and Chinese, also very slow on CPU only machine
 import logging
 from paddleocr import PaddleOCR
 from dotenv import load_dotenv
 import os
 
-#  User configurable variables, must change to your own settings
+#  User configurable variables, MUST change to your own settings!!
 # -------------------
-# TODO: Replace this with the actual window title of the chat program
+# Replace this with the actual window title of the chat program
 # if not certain, run this program once to see all window titles.
-chat_window_title = 'chatgpt test'
+# some chat window has strange characters, so use the title prefix instead
+chat_window_title_prefix = 'chatgpt test'
 #QUESTION_PREFIX = '@chatgpt'
 QUESTION_PREFIX = '机器人'
+
+# the input message box's start position to paste the answer to the chat window's input box
+# best download and use the "greenshot" program to find the coordinates of the chat window's input box: 
+inx = 1086
+iny = 1061
+# which OpenAI model to use
+# the API key should be stored in the .env file
+MODEL = "gpt-3.5-turbo"
+
+# Internal variables 
+# -------------------
+# shift to hit middle of Copy menu item when sending message to chat window
+plusx = 41
+plusy = 14
+
 # How long in seconds to wait before checking for new messages again if no new messages are found
 SLEEP_TIME = 5    
 
 # TIME limit of the chatbot: 1 hour each time
 TIME_LIMT = 3600
 
-# TODO: best use "greenshot" to find the coordinates of the chat window's input box
-# the input message box's start position
-# using this as the anchor point!!
-inx = 1050
-iny = 1065
-
-# shift to hit middle of Copy menu item
-plusx = 41
-plusy = 14
-
-# which OpenAI model to use
-MODEL = "gpt-3.5-turbo"
-
-# Internal variables 
-# -------------------
-# screenshot of the chat window, used for OCR
+# screenshot of the chat window, used for OCR to check if window has changed content.
 prev_image_array = np.array([],dtype=float)
 
 # global questions dictionary: avoid answering the same question twice
 # using set to be sure that the question is unique
 question_dict = set() 
+
 
 # load the contents of the .env file into os.environ
 load_dotenv()
@@ -129,18 +131,8 @@ def getAnswer(msg: str) -> str:
 
     return response
 
-# the old main program, not used anymore
-# analyzeScreenshot()
-
-
-# Set the Tesseract OCR path to the installation path
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Update this path accordingly
-# Update this path accordingly
-#pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-
-# capture the new questions from the chat window
+# Capture the new questions from the chat window
 # using OCR of the screenshot to extract the text, find the new questions starting with "@chatgpt"
-
 def capture_chat_text(window_title):
     global prev_image_array
     global question_dict
@@ -151,7 +143,6 @@ def capture_chat_text(window_title):
         sys.exit(1)
 
     window = windows[0]
-
     # window = gw.getWindowsWithTitle(window_title)[0]
 
     if window.visible:
@@ -166,23 +157,24 @@ def capture_chat_text(window_title):
         current_image_array = np.array(screenshot)
         
         if np.array_equal(prev_image_array, current_image_array):
-            print("The images are the same. No new questions.")            
+            print("The chat window screenshot is the same as the previous one. No new questions.")            
             return result
         else:
-            print("The images are different. Detecting new questions...")        
+            print("The chat window screenshot is different from the previous one. Detecting new questions...")        
         prev_image_array = current_image_array
         
         # Initialize PaddleOCR with mixed languages (English and Simplified Chinese)
         ocr = PaddleOCR(lang='ch')
 
         # Perform OCR on the screenshot
-        chat_text = ocr.ocr( current_image_array)
-
+        chat_text = ocr.ocr(current_image_array)
+        # the output of ocr.ocr() is a list of a single entry, which is a list of tuples
+        # very confusing and not intuitive at all!
         for line in chat_text[0]:
-                line= line[-1][0]
+                line= line[-1][0]  # last entry of the tuple is the (text, confidence) pair. 
                 # check if the line contains a prefix string of "@chatgpt"
                 if line.startswith(QUESTION_PREFIX):
-                    # get the message
+                    # get the message after the prefix
                     question = line.split(QUESTION_PREFIX)[1]   
                     # trim the leading and trailing spaces
                     question = question.strip()   
@@ -195,60 +187,27 @@ def capture_chat_text(window_title):
                     else:
                         print(f"The question: '{question}' has been asked before. Ignoring it.")
                         
-        return result                                                       
-# Each inner list contains information about the detected text line,
-# including the bounding box coordinates
-# (in the format [x1, y1, x2, y2, x3, y3, x4, y4]), confidence score, and the recognized text.
-# The recognized text can be accessed using the last element of the inner list (e.g., line[-1]).
-#         [
-#     [[x1, y1, x2, y2, x3, y3, x4, y4], confidence, 'Text line 1'],
-#     [[x1, y1, x2, y2, x3, y3, x4, y4], confidence, 'Text line 2'],
-#     ...
-# ]
-
-        #-------------- pytesseract OCR: bad for Chinese recogniztion. 
-        # Convert the screenshot to a grayscale image
-        #img_gray = cv2.cvtColor(np.array(screenshot), cv2.COLOR_BGR2GRAY)
-        # Extract text from the image
-        # Extract text using Tesseract OCR with Simplified Chinese language
-        #text = pytesseract.image_to_string(img_gray, lang='chi_sim') # no control over temp path to write text file
-        # Create temporary file for output
-        # Print the extracted text
-        #print(text)
-
-        #-------------- using easyocr: bad for English mixed within Chinese. 
-        # Convert the screenshot to grayscale and resize it        #
-        # img_gray = screenshot.convert('L')
-        # img_gray = img_gray.resize((img_gray.width*3, img_gray.height*3))
-        # img_gray = np.array(img_gray)
-        
-        # # Perform OCR on the screenshot
-        # reader = easyocr.Reader(['ch_sim'])
-        # result = reader.readtext(img_gray)
-
-        # result = [
-        #     ((10, 10, 200, 50), '你好', 0.9),
-        #     ((10, 60, 300, 100), '世界', 0.95),
-        # ]       
+        return result                                                      
     else:
         print("Chat window named '{}' not found or not visible.".format(window_title))
         return None
-
 
 if __name__ == '__main__':
     
     start_time = time.time()    
     if sys.version_info >= (3, 11):
         sys.exit("This script only supports Python versions earlier than 3.11, due to the OCR package used.")
-
+    chat_window_title =''
     # Get all visible windows, print the title of each window
     windows = gw.getAllWindows()
     print('---------------------------------')
     print("All visible windows' titles are:")
     for window in windows:
-        if window.visible:            
-            print(window.title)
-
+        if window.visible:     
+            if window.title.startswith(chat_window_title_prefix):  
+                chat_window_title=window.title
+                print(f'chat_window_title={chat_window_title}')
+                     
     # Configure logging level for PaddleOCR
     # turn off all warnings
     
